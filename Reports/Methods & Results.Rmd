@@ -1,0 +1,346 @@
+---
+output: 
+  officedown::rdocx_document:
+    reference_docx: "table_template.docx"
+    tables:
+      style: "List Table 6 Colorful"
+      layout: autofit
+      width: 1.0
+    mapstyles:
+      Normal: ['First Paragraph']
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = FALSE, fig.cap = TRUE, dev='svg')
+library(officedown)
+library(officer)
+library(tidyverse)
+library(flextable)
+library(janitor)
+library(lme4)
+library(lmerTest)
+library(car)
+library(ggeffects)
+library(patchwork)
+library(cowplot)
+library(AMR)
+library(sf)
+library(kriging)
+library(tigris)
+source('../R/format_anova.R')
+
+# set some officedown parameters
+fp = fp_par(
+  text.align = "center", 
+  padding.bottom = 20, padding.top = 120, 
+  border.bottom = fp_border())
+ft = fp_text(shading.color='#EFEFEF', bold = TRUE)
+
+# data for the per-timestep analyses
+dat = read.csv("../Data/Enriched/mastersheet.csv") %>%
+  mutate(
+    across(c(site_name),as.factor)
+  )
+
+# data for the overall analyses (initial vs final)
+dat2 = dat %>%
+  group_by(site_name) %>%
+  summarise(
+    first_count = first(total_stems),
+    last_count = last(total_stems)
+  )
+
+pca1 = readRDS('../Data/Objects/pca1.rds')
+pca2 = readRDS('../Data/Objects/pca2.rds')
+
+set.seed(42)
+
+```
+
+**2. Methods**
+
+**2.1 Overview**
+
+The effects of biocontrol treatments, time, geography, and climate on *C. arvense* stem counts were evaluated using Poisson generalized linear mixed effects models and ordinary krieging. Due to data sparsity, only main effects were considered in the GLMMs, and dimension reduction was performed on multiple climatic variables using principal component analyses (PCA). All mixed effects models included site ID as a random intercept term.
+
+**2.2 Overall analyses**
+
+Overall trends from the beginning to the end of the time series were evaluated by modelling final stem counts as a function of initial stem counts, by site. Ordinary krieging was also performed on the percentage change in stem counts from the first to the final survey to test for spatial autocorrelation. These initial results were used to inform the next analyses. In particular, ordinary krieging suggested that terrain 'flatness' may have influenced stem counts over the time series.
+
+**2.3 Per-timestep analyses**
+
+The change in stem counts from time t-1 to time t was also evaluated to account for inconsistent treatment protocols at each site. To do so, we used two different Poisson GLMMs. In both models we included stem count at time t-1 and survey year was covariates, to account for temporal trends and autocorrelation.
+
+**2.3.1 Protocol effects**
+
+The first model focused on treatment protocol, and included as predictors: treatment type at last treatment (targeted, broadcast, or targeted+broadcast), years since the last treatment, and amount of inoculum used in the last treatment.
+
+**2.3.2 Site effects**
+
+The second model focused on (site-level) climate and geographic effects, and included as independent variables: annual mean maximum temperature, standard deviation of elevation (within a 2.5 km radius around each site), % cropland or developed landuse (within a 1 km radius around each site), and the first and second principal components extracted from two different PCAs.
+
+**2.3.3 Climate PCAs**
+
+The first PCA (henceforth 'treatment-time PCA') included climate variables from a 2 week window prior to each biocontrol treatment, while the second PCA (henceforth 'observation-time PCA') included the same variables but collected from a 2 week window prior to each monitoring survey. Both PCAs included the following predictors (based on daily means averaged over the 2-week window): maximum temperature (C), minimum temperature (C), average temperature (C), total precipitation (mm/day), water vapor pressure (Pa), relative humidity (%), dew point (C), shortwave radiation flux (W/m2), as well as elevation (m).
+
+**2.4 Covariate data and software**
+
+Analyses were performed with R version 4.2.2 (R Core Team 2023) and RStudio version 2023.03.0 (RStudio Team 2023), using dplyr (Wickham et al. 2021) and sqldf to prepare the data and ggplot2 for visualisation (Wickham 2016). Linear mixed effect models were fitted with lme4 (Bates et al. 2015), ordinary kriging was performed using the kriging package (Olmedo 2022), and PCA was performed using the base R stats library. The car package (citation) was used to obtain Anova tables for each GLMM. The Adaptive Gauss-Hermite Quadrature was used (with nAGQ=0 in lme4) was used to allow model convergence on both GLMMs in the per-timestep analyses, which can cause less accurate but nonetheless acceptable model fits (Stegmann et al. 2018).
+
+Climate data were directly obtained or derived from DAYMET version 4 (Thornton et al. 2022) using the daymetr package (Hufkens et al. 2018). Standard deviation of elevation was derived from the USGS 3DEP model (10.2m) dataset (U.S. Geological Survey 2022) and landuse was derived from the ESA WorldCover (10m) dataset (Zanaga et al. 2022), using Google Earth Engine version 0.1.329 (Gorelick et al. 2017) via the rgee (Aybar 2022) and reticulate (Ushey et al. 2023) packages. The Colorado TIGER/Line shapefile was obtained using the tigris package (Walker 2023).
+
+**3. Results**
+
+**3.1 Overall Stem Counts**
+
+At most sites, *C. arvense* stem counts declined from initial measurement to final observation (Table 1), from a mean (± SE) of 87.9 ± 6.5 stems to 44.7 ± 4.2 stems (Figure 1).
+
+Table 1. Poisson GLMM results for final stem counts in *C. arvense* as a function of initial stem counts. Site was included as a random intercept term. Statistically significant results (p < 0.05) highlighted in bold.
+```{r tab_1, include=T}
+
+m0 = glmer(last_count ~ first_count + (1|site_name),
+            data=dat2,family='poisson'); # summary(m0); car::Anova(m0)
+
+format_anova(m0)
+
+```
+
+
+```{r fig_1, include=T, echo=F, message=F, warning=F, results='hide', fig.width=3, fig.height=3}
+
+ggpredict(m0,terms=c('first_count')) %>% plot(add.data=T,limit.range=T) +
+  geom_abline(intercept=0,slope=1,linetype='dashed',colour='red') +
+  labs(
+    x = "Initial stem count",
+    y = "Final stem count"
+  ) +
+  scale_x_continuous(limits=c(0,315)) +
+  scale_y_continuous(limits=c(0,315)) +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+```
+Figure 1. Initial vs final stem counts in *C. arvense*. Points indicate sites. Dashed red line shows y=x: values above this line indicate overall increase in stem counts, and vales below indicate decline. Shaded area is 95% confidence ribbon. N=87.
+
+Percent change from initial to final stem counts was spatially autocorrelated (Moran's I = 0.186 vs -0.012 expected, p < 0.01). Krieged values are presented in Figure 2.
+
+```{r fig_2, include=T, echo=F, message=F, warning=F, results='hide', fig.width=3, fig.height=3}
+
+co = tigris::states(cb=T,resolution="20m") %>% filter(STUSPS=="CO") %>% st_transform(crs=4326)
+
+sites = dat %>%
+  select(site_name,percent_change_from_year_1,monitoring_year,latitude,longitude) %>%
+  group_by(site_name,latitude,longitude) %>%
+  filter(monitoring_year == max(monitoring_year))
+
+kriged = kriging(
+  x=sites$longitude,
+  y=sites$latitude,
+  response=sites$percent_change_from_year_1
+)
+kmap = kriged$map %>% as.data.frame() %>%
+  #st_as_sf(coords=c("x","y"), crs = st_crs(4326)) %>% # assume wgs84
+  ggplot(data=.) +
+  geom_tile(aes(x=x,y=y,fill=pred),alpha=0.7) +
+  geom_point(data=sites,aes(x=longitude,y=latitude),colour='red') +
+  geom_sf(data=co,fill=NA,color='black',linewidth=.5) +
+  coord_sf() +
+  scale_fill_gradient(low="cyan",high="orange",name="% Change from Yr 1") +
+  labs(x="",y="",subtitle='') +
+  scale_x_continuous() + scale_y_continuous() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = 'bottom',
+    axis.text.x = element_text(angle=45,hjust=1)
+  ) +
+  guides(fill = guide_colourbar(title.position='top'))
+
+kmap
+
+# Paired basemap: https://www.google.com/maps/d/u/0/edit?mid=1Rfzfp1JJZs-DaXO8YyAK2GvmDu3XLlY&usp=sharing
+
+```
+Figure 2. % change in *C. arvense* stem counts from initial to final survey, interpolated across Colorado with ordinary kriging. Red points show site locations.
+
+**3.2 Climate PCAs**
+
+In the treatment-time PCA, PC1 explained 52.1% of the variance while PC2 explained 22.8% (Figure 3A). Higher values of PC1 correlated with higher elevation and precipitation, while lower values of PC1 correlated with higher temperature, vapor pressure, and dew point. Higher values of PC2 correlated with higher relative humidity and also correlated with precipitation, while lower values correlated with higher radiance.
+
+In the observation-time PCA, PC1 explained 52.5% of the variance and PC2 explained 30.7% (Figure 3B). Predictor clustering was overall similar to the treatment-time PCA. Higher values of PC1 correlated with elevation, while lower values correlated with temperature, dew point, vapor point, as well as relative humidity and precipitation. Higher values of PC2 correlated with radiance and higher temperatures, while lower values correlated with precipitation and relative humidity.
+
+
+```{r pca_loadings, echo=F, message=F, warning=F, results='hide',  include=T, fig.width=3, fig.height=6}
+
+rownames(pca1$rotation) = c("Elev.","Tmax","Tmin","Tavg","Precip.","VP","Rad.","RH","DP")
+rownames(pca2$rotation) = c("Elev.","Tmax","Tmin","Tavg","Precip.","VP","Rad.","RH","DP")
+
+p1 = ggplot_pca(pca1,points_alpha=0.03) +
+  labs(subtitle='A',
+       caption='') +
+    scale_y_continuous(limits=c(-3,3)) +
+  scale_x_continuous(limits=c(-3,3)) +
+  theme_classic()
+p2 = ggplot_pca(pca2,points_alpha=0.03) +
+  labs(subtitle='B',
+       caption='') +
+  scale_y_continuous(limits=c(-4,4)) +
+  scale_x_continuous(limits=c(-4,4)) +
+  theme_classic()
+
+p1/p2
+
+```
+Figure 3. Biplots of A. treatment-time PCA, and B. observation-time PCA. Points represent site-year combinations used to train the PCAs, arrows represent loadings for each predictor. Tmax = daily maximum temperature, Tavg = daily average temperature, Tmin = daily minimum temperature, Rad = radiance, VP = vapor pressure, RH = relative humidity, DP = dew point, Precip = precipitation, Elev = elevation.
+
+**3.3 Annual Stem Counts**
+
+*Treatment and protocol effects*
+
+Stem count at time t was influenced by stem count at time t-1, monitoring year, last treatment type, last treatment quantity, and years since the last treatment (Table 2). Marginal effects of each predictor are presented in Figure 4.
+
+Table 2. Poisson GLMM results for stem counts in *C. arvense* at time t as a function of: stem counts at time t-1, monitoring year, last treatment type, last treatment quantity (of biocontrol inoculum), and years since last treatment. Site was included as a random intercept term. Statistically significant results (p < 0.05) highlighted in bold.
+```{r table_2, warning=F, include=T}
+
+m1 = glmer(total_stems ~ last_stems + monitoring_year + yrs_since_trt + amount_lasttrt + treatment_lasttrt + (1|site_name),
+           data=dat,family='poisson',nAGQ=0); # summary(m1); car::Anova(m1)
+format_anova(m1)
+
+```
+
+Stem counts were lower in later monitoring years (Figure 4A), and higher stem counts at time t-1 resulted in lower stem counts at time t, suggesting negative density dependence (Figure 4B). Stem counts were lowest after broadcast treatment (95% CI: 40.2-59.4), highest after targeted treatment (95% CI: 52.4-71.0), and intermediate after broadcast+targeted (95% CI: 46.2-66.2) (Figure 4C). Stem counts also increased with increasing time since the last treatment was applied (Figure 4D), and declined with increasing quantity of innoculum at the last treatment (Figure 4E).
+
+```{r fig_4, echo=F, message=F, warning=F, results='hide',  include=T, fig.width=6, fig.height=8}
+
+p1 = ggpredict(m1,terms=c('monitoring_year')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='A',
+     x='Monitoring year',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p2 = ggpredict(m1,terms=c('last_stems')) %>% plot(add.data=F,limit.range=T) +
+  geom_abline(intercept=0,slope=1,linetype='dashed',colour='red') +
+  scale_x_continuous(limits=c(0,300)) + 
+  scale_y_continuous(limits=c(0,300)) +
+  labs(subtitle='B',
+     x='Stems (t-1)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p3 = ggpredict(m1,terms=c('treatment_lasttrt')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='C',
+     x='Treatment',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p4 = ggpredict(m1,terms=c('yrs_since_trt')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='D',
+     x='Years since last treatment',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p5 = ggpredict(m1,terms=c('amount_lasttrt')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='E',
+     x='Quantity at last treatment (g)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+placeholder = ggplot() + theme_void()
+
+(p1|p2)/(p3|p4)/(p5|placeholder)
+
+
+```
+Figure 4. Marginal effects on stem counts at time t of: A. monitoring year, B. stem count in the prior year, C. last treatment type, D. years since last treatment, and E. quantity of *P. punctiformis* inoculum at last treatment. Shaded areas (and error bars in panel C) represent 95% confidence intervals. Dashed red line in panel B shows y=x: values above this line indicate overall increase in stem counts since prior year, and vales below indicate decline. N=87.
+
+*Climate and geographic effects*
+
+Controlling for stem counts at t-1 and monitoring year as covariates, stem counts at time t were also affected by mean annual daily maximum temperature and standard deviation of elevation, as well as principal components based on climate data from treatment time and observation time (Table 3).
+
+Table 3. Poisson GLMM results for stem counts in *C. arvense* at time t as a function of: stem counts at time t-1, monitoring year, annual mean maximum temperature, standard deviation of elevation, and PC1 and PC2 from treatment-time PCA and observation-time PCA. Standard deviation of elevation was calculated for a 2.5 radius circle around each site. Site was included as a random intercept term. Statistically significant results (p < 0.05) highlighted in bold.
+```{r table_3, warning=F, include=T}
+
+m2 = glmer(total_stems ~ last_stems + monitoring_year + PC1_obs + PC1_trt + PC2_obs + PC2_trt + tmax_ann + elev_stddev_m + pct_dist + (1|site_name),
+           data=dat,family='poisson',nAGQ = 0); # summary(m2); car::Anova(m2)
+format_anova(m2)
+
+# landuse: chi2 = 0.01, df=1, p=0.925
+
+```
+
+Stem counts at time t declined with increasing mean annual daily maximum temperatures (Figure 5A), and with increasing standard deviation of elevation (i.e., less 'flatness', Figure 5B).
+
+Stem counts decreased with lower PC1 scores (Figure 5C) and higher PC2 scores (Figure 5D) based on the PCA on climate around treatment time. In other words, stem counts were lower where in the 2 weeks prior to treatment sites had: lower radiance and elevation, and higher temperatures, vapour pressure, dew point, and relative humidity. But the effect of precipitation in the 2 weeks prior to treatment was more ambivalent.
+
+Based on the PCA on climate around observation time, stem counts decreased with higher PC1 (Figure 5E) and PC2 (Figure 5F) scores. In other words stem counts were also lower where, in the 2 weeks prior to monitoring, sites had: higher radiance and elevation, and lower daily average and minimum temperatures, dew point, vapor point, precipitation, and relative humidity. But the effect of daily maximum temperatures was more ambivalent.
+
+```{r fig_5, echo=F, message=F, warning=F, results='hide',  include=T, fig.width=6, fig.height=8}
+
+p1 = ggpredict(m2,terms=c('tmax_ann')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='A',
+     x='Annual mean max. temp. (C)',y='Stems (t)') +
+  scale_x_continuous(limits=c(12,23)) +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p2 = ggpredict(m2,terms=c('elev_stddev_m')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='B',
+     x='Std. dev of elevation (m)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p3 = ggpredict(m2,terms=c('PC1_trt')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='C',
+     x='PC1 (treatment)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p4 = ggpredict(m2,terms=c('PC2_trt')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='D',
+     x='PC2 (treatment)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p5 = ggpredict(m2,terms=c('PC1_obs')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='E',
+     x='PC1 (observation)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+p6 = ggpredict(m2,terms=c('PC2_obs')) %>% plot(add.data=F,limit.range=T) +
+  labs(subtitle='F',
+     x='PC2 (observation)',y='Stems (t)') +
+  theme_classic() +
+  theme(
+    plot.title = element_blank()
+  )
+
+placeholder = ggplot() + theme_void()
+
+(p1|p2)/(p3|p4)/(p5|p6)
+
+
+```
+Figure 4. Marginal effects on stem counts at time t of: A. annual mean maximum temperature (in celsius), B. standard deviation of elevation (2.5 km radius around each site), C. PC1 from treatment-time PCA, D. PC2 from treatment-time PCA, E. PC1 from observation-time PCA, F. PC2 from observation-time PCA. Shaded areas represent 95% confidence intervals. N=87.
